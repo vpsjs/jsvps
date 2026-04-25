@@ -1185,9 +1185,7 @@ do
                     14) check_ddos_cc ;;
 # DDoS/CC 攻击智能检测 带结果建议
 check_ddos_cc() {
-  while true
-            do
-	clear
+  clear
     echo "============================================="
     echo "        DDoS/CC 攻击智能检测中"
     echo "============================================="
