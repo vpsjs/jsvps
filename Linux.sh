@@ -1,5 +1,10 @@
 #!/bin/bash
-
+# 1. 先配置别名（只写一次，避免重复）
+if ! grep -q "alias jsvps=" ~/.bashrc; then
+    echo "alias jsvps='bash ~/Linux.sh'" >> ~/.bashrc
+    echo "✅ 别名 jsvps 已写入 ~/.bashrc，下次登录直接输入 jsvps 即可调用"
+    source ~/.bashrc  # 本次会话也立即生效
+fi
 # 定义颜色代码
 RED='\033[0;31m'
 GREEN='\033[0;32m'
