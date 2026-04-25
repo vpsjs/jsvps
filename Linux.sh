@@ -797,61 +797,92 @@ function set_dns() {
     fi
 }
 
-# DDoS/CC 攻击智能检测 带结果建议
+# ====================== 终极完整版 DDoS/CC 检测 每项带中文解释 ======================
 check_ddos_cc() {
     clear
-    echo "============================================="
-    echo "        DDoS/CC 攻击智能检测中"
-    echo "============================================="
+    echo "====================================================="
+    echo "           DDoS/CC 全面攻击检测（带中文解释）"
+    echo "====================================================="
 
-    echo -e "\n[1] 系统负载情况"
+    # 1.系统负载内存
+    echo -e "\n[1] 系统负载 & 内存状态"
+    echo "----------------------------------------"
     uptime
     CPU_LOAD=$(uptime | awk -F'load average:' '{print $2}' | cut -d, -f1 | sed 's/ //g')
+    echo -e "\n当前CPU1分钟负载：$CPU_LOAD"
+    echo "解释：负载越高越卡，正常服务器建议低于1.5，超过2.5大概率被攻击或程序卡死"
+    free -h | awk '/Mem/{print "内存使用：" $3 "/" $2 "  剩余：" $4}'
+    echo "解释：内存占用过高会导致网站打不开、SSH卡顿掉线"
 
-    echo -e "\n[2] 全网TCP连接统计"
+    # 2.网卡带宽测速
+    echo -e "\n[2] 服务器实时带宽流量"
+    echo "----------------------------------------"
+    DEFAULT_NIC=$(ip route | awk '/default/ {print $5}')
+    [ -z "$DEFAULT_NIC" ] && DEFAULT_NIC=$(ls /sys/class/net|grep -v lo|head -n1)
+    if [ -n "$DEFAULT_NIC" ]; then
+        RX1=$(cat /sys/class/net/$DEFAULT_NIC/statistics/rx_bytes)
+        sleep 3
+        RX2=$(cat /sys/class/net/$DEFAULT_NIC/statistics/rx_bytes)
+        RX_KB=$(( ($RX2 - RX1) / 3 / 1024 ))
+        echo "网卡：$DEFAULT_NIC   入站流量：$RX_KB KB/s"
+        echo "解释：流量瞬间跑满几千KB/s、MB/s，基本就是DDoS洪水攻击"
+    fi
+
+    # 3.TCP各类连接统计+中文解释
+    echo -e "\n[3] TCP连接状态统计（攻击核心判断）"
+    echo "----------------------------------------"
     ss -s
 
-    # 统计SYN半连接 DDoS特征
     SYN_NUM=$(netstat -an 2>/dev/null | grep SYN_RECV | wc -l)
-    echo -e "\n[3] SYN_RECV 半连接数量(DDoS)：$SYN_NUM"
-
-    # 统计已建立连接 CC特征
     EST_NUM=$(netstat -an 2>/dev/null | grep ESTABLISHED | wc -l)
-    echo -e "[4] ESTABLISHED 已建立连接(CC)：$EST_NUM"
+    TW_NUM=$(netstat -an 2>/dev/null | grep TIME_WAIT | wc -l)
 
-    echo -e "\n[5] 连接数最高前20个异常IP"
+    echo -e "\nSYN_RECV 半连接数量：$SYN_NUM"
+    echo "解释：数值很大就是DDoS SYN洪水，握手不完成，消耗服务器资源"
+
+    echo "ESTABLISHED 正常已连接：$EST_NUM"
+    echo "解释：数值几百上千，就是CC攻击，恶意IP一直占着网站连接不放"
+
+    echo "TIME_WAIT 等待关闭连接：$TW_NUM"
+    echo "解释：过高一般是端口扫描、爬虫、短连接恶意请求"
+
+    # 4.异常IP排行
+    echo -e "\n[4] 连接最多前20个IP（可疑攻击IP）"
+    echo "----------------------------------------"
     netstat -an 2>/dev/null | awk '{print $5}' | awk -F: '{print $1}' | grep -v 127.0.0.1 | sort | uniq -c | sort -nr | head -20
+    echo "解释：前面数字越大的IP越可疑，可以直接封禁该IP"
 
-    echo -e "\n============================================="
-    echo "           检测判定结果 + 处理建议"
-    echo "============================================="
+    # 5.综合判定 + 中文结论建议
+    echo -e "\n====================================================="
+    echo "               综合判定结果 + 中文解释建议"
+    echo "====================================================="
 
     if [ $SYN_NUM -gt 200 ]; then
-        echo "🔴 判定：疑似遭受 SYN-DDoS 洪水攻击"
-        echo "💡 建议："
-        echo "   1. 联系机房开启流量清洗/高防防护"
-        echo "   2. 防火墙封禁异常IP段"
-        echo "   3. 优化内核TCP参数防御半连接攻击"
-    elif [ $EST_NUM -gt 500 ]; then
-        echo "🔴 判定：疑似遭受 CC 应用层网站攻击"
-        echo "💡 建议："
-        echo "   1. Nginx/Apache 开启单IP访问限速"
-        echo "   2. 封禁高频请求恶意IP"
-        echo "   3. 接入CDN隐藏源站IP"
-    elif (( $(echo "$CPU_LOAD > 2.0" | bc -l) )); then
-        echo "🟠 判定：服务器负载过高，疑似压测/CC攻击"
-        echo "💡 建议："
-        echo "   1. 查看网站日志排查恶意爬虫/刷接口"
-        echo "   2. 限制单IP并发连接数"
+        echo "🔴 判定：疑似 DDoS SYN 洪水攻击"
+        echo "解释：大量虚假连接握手不完成，专门耗死服务器网络"
+        echo "处理建议：开启机房高防/流量清洗、封异常IP段、开启SYN防火墙保护"
+    elif [ $EST_NUM -gt 600 ] && (( $(echo "$CPU_LOAD > 2.0" | bc -l) )); then
+        echo "🔴 判定：疑似 CC 网站应用层攻击"
+        echo "解释：大量真实请求刷网站，把CPU和带宽占满，网站打不开"
+        echo "处理建议：Nginx限速、接入CDN、封禁高频IP、开启人机验证"
+    elif (( $(echo "$CPU_LOAD > 2.2" | bc -l) )); then
+        echo "🟠 判定：服务器负载异常偏高"
+        echo "解释：可能被压测、爬虫轰炸、或有程序死循环占用CPU"
+        echo "处理建议：top查异常进程、检查网站日志、限制单IP访问频率"
+    elif [ $TW_NUM -gt 1200 ]; then
+        echo "🟡 判定：TIME_WAIT连接过多"
+        echo "解释：疑似端口扫描、恶意爬虫、大量短连接轰炸"
+        echo "处理建议：优化内核TCP参数、关闭不必要外网端口"
     else
-        echo "🟢 判定：服务器连接正常，暂无DDoS/CC攻击迹象"
-        echo "💡 建议：保持防火墙开启，日常定期监控即可"
+        echo "🟢 判定：服务器网络、连接、负载全部正常"
+        echo "解释：目前没有DDoS、CC、端口扫描、爬虫攻击迹象"
+        echo "建议：保持防火墙开机，日常定期检测即可"
     fi
 
     echo -e "\n按回车键返回主菜单..."
     read
 }
-
+# =============================================================
 
 # 一键更新 CentOS 最新版系统
 update_centos() {
