@@ -114,6 +114,7 @@ network_menu() {
     echo "11. 一键关闭四层端口转发"
     echo "12. 一键查看服务器在使用的端口"
     echo "13. 一键查看什么IP在跑带宽"
+	echo "14. 一键检测DDoS/CC攻击"
     echo "q. 返回上级菜单"
     echo "===================="
 }
@@ -1181,7 +1182,63 @@ do
                         check_and_install_iftop
                         start_iftop
                         ;;   
-                        
+                    14) check_ddos_cc ;;
+# DDoS/CC 攻击智能检测 带结果建议
+check_ddos_cc() {
+  while true
+            do
+	clear
+    echo "============================================="
+    echo "        DDoS/CC 攻击智能检测中"
+    echo "============================================="
+
+    echo -e "\n[1] 系统负载情况"
+    uptime
+    CPU_LOAD=$(uptime | awk -F'load average:' '{print $2}' | cut -d, -f1 | sed 's/ //g')
+
+    echo -e "\n[2] 全网TCP连接统计"
+    ss -s
+
+    # 统计SYN半连接 DDoS特征
+    SYN_NUM=$(netstat -an 2>/dev/null | grep SYN_RECV | wc -l)
+    echo -e "\n[3] SYN_RECV 半连接数量(DDoS)：$SYN_NUM"
+
+    # 统计已建立连接 CC特征
+    EST_NUM=$(netstat -an 2>/dev/null | grep ESTABLISHED | wc -l)
+    echo -e "[4] ESTABLISHED 已建立连接(CC)：$EST_NUM"
+
+    echo -e "\n[5] 连接数最高前20个异常IP"
+    netstat -an 2>/dev/null | awk '{print $5}' | awk -F: '{print $1}' | grep -v 127.0.0.1 | sort | uniq -c | sort -nr | head -20
+
+    echo -e "\n============================================="
+    echo "           检测判定结果 + 处理建议"
+    echo "============================================="
+
+    if [ $SYN_NUM -gt 200 ]; then
+        echo "🔴 判定：疑似遭受 SYN-DDoS 洪水攻击"
+        echo "💡 建议："
+        echo "   1. 联系机房开启流量清洗/高防防护"
+        echo "   2. 防火墙封禁异常IP段"
+        echo "   3. 优化内核TCP参数防御半连接攻击"
+    elif [ $EST_NUM -gt 500 ]; then
+        echo "🔴 判定：疑似遭受 CC 应用层网站攻击"
+        echo "💡 建议："
+        echo "   1. Nginx/Apache 开启单IP访问限速"
+        echo "   2. 封禁高频请求恶意IP"
+        echo "   3. 接入CDN隐藏源站IP"
+    elif (( $(echo "$CPU_LOAD > 2.0" | bc -l) )); then
+        echo "🟠 判定：服务器负载过高，疑似压测/CC攻击"
+        echo "💡 建议："
+        echo "   1. 查看网站日志排查恶意爬虫/刷接口"
+        echo "   2. 限制单IP并发连接数"
+    else
+        echo "🟢 判定：服务器连接正常，暂无DDoS/CC攻击迹象"
+        echo "💡 建议：保持防火墙开启，日常定期监控即可"
+    fi
+
+    echo -e "\n按回车键返回主菜单..."
+    read
+}
                     q)
                         break
                         ;;
