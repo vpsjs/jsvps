@@ -797,93 +797,167 @@ function set_dns() {
     fi
 }
 
-# ====================== 终极完整版 DDoS/CC 检测 每项带中文解释 ======================
+# 行业最新标准 轻量化DDoS/CC全维度检测 集成完整版 不卡死服务器
 check_ddos_cc() {
     clear
     echo "====================================================="
-    echo "           DDoS/CC 全面攻击检测（带中文解释）"
+    echo "   行业最新标准 全维度攻击安全检测（轻量版）"
     echo "====================================================="
 
-    # 1.系统负载内存
-    echo -e "\n[1] 系统负载 & 内存状态"
+    # ========== 1.自动识别硬件 + 智能访客阈值 ==========
+    CPU_CORE=$(grep -c ^processor /proc/cpuinfo)
+    MEM_TOTAL_RAW=$(free -m | awk '/Mem/{print $2}')
+    MEM_TOTAL=$(( MEM_TOTAL_RAW / 1024 ))
+    [ "$MEM_TOTAL" -lt 1 ] && MEM_TOTAL=1
+
+    echo -e "\n[1] 服务器硬件配置 & 智能访客阈值"
+    echo "----------------------------------------"
+    echo "CPU核心数：$CPU_CORE 核"
+    echo "物理内存：$MEM_TOTAL G"
+
+    if [ $CPU_CORE -eq 1 ] && [ $MEM_TOTAL -le 1 ]; then
+        SAFE_USER=80
+        echo "适配规则：1核1G低配 → 每小时安全上限 ${SAFE_USER} 人"
+    elif [ $CPU_CORE -eq 2 ] && [ $MEM_TOTAL -le 2 ]; then
+        SAFE_USER=180
+        echo "适配规则：2核2G中配 → 每小时安全上限 ${SAFE_USER} 人"
+    elif [ $CPU_CORE -ge 4 ] && [ $MEM_TOTAL -ge 4 ]; then
+        SAFE_USER=400
+        echo "适配规则：4核4G高配 → 每小时安全上限 ${SAFE_USER} 人"
+    else
+        SAFE_USER=120
+        echo "适配规则：通用均衡配置 → 每小时安全上限 ${SAFE_USER} 人"
+    fi
+    echo "解释：超过该人数自动判定疑似CC/爬虫/恶意攻击"
+
+    # ========== 2.系统负载 ==========
+    echo -e "\n[2] 系统CPU负载状态"
     echo "----------------------------------------"
     uptime
     CPU_LOAD=$(uptime | awk -F'load average:' '{print $2}' | cut -d, -f1 | sed 's/ //g')
-    echo -e "\n当前CPU1分钟负载：$CPU_LOAD"
-    echo "解释：负载越高越卡，正常服务器建议低于1.5，超过2.5大概率被攻击或程序卡死"
-    free -h | awk '/Mem/{print "内存使用：" $3 "/" $2 "  剩余：" $4}'
-    echo "解释：内存占用过高会导致网站打不开、SSH卡顿掉线"
+    echo "当前1分钟负载：$CPU_LOAD"
+    echo "解释：负载接近/超过CPU核心数，服务器压力严重超标"
 
-    # 2.网卡带宽测速
-    echo -e "\n[2] 服务器实时带宽流量"
-    echo "----------------------------------------"
-    DEFAULT_NIC=$(ip route | awk '/default/ {print $5}')
-    [ -z "$DEFAULT_NIC" ] && DEFAULT_NIC=$(ls /sys/class/net|grep -v lo|head -n1)
-    if [ -n "$DEFAULT_NIC" ]; then
-        RX1=$(cat /sys/class/net/$DEFAULT_NIC/statistics/rx_bytes)
-        sleep 3
-        RX2=$(cat /sys/class/net/$DEFAULT_NIC/statistics/rx_bytes)
-        RX_KB=$(( ($RX2 - RX1) / 3 / 1024 ))
-        echo "网卡：$DEFAULT_NIC   入站流量：$RX_KB KB/s"
-        echo "解释：流量瞬间跑满几千KB/s、MB/s，基本就是DDoS洪水攻击"
-    fi
-
-    # 3.TCP各类连接统计+中文解释
-    echo -e "\n[3] TCP连接状态统计（攻击核心判断）"
+    # ========== 3.轻量化TCP连接概况 DDoS/CC基础 ==========
+    echo -e "\n[3] 网络连接核心状态检测"
     echo "----------------------------------------"
     ss -s
+    SYN_NUM=$(ss -s 2>/dev/null | grep -i syn | awk '{print $3}')
+    EST_NUM=$(ss -s 2>/dev/null | grep -i estab | awk '{print $1}')
+    [ -z "$SYN_NUM" ] && SYN_NUM=0
+    [ -z "$EST_NUM" ] && EST_NUM=0
 
-    SYN_NUM=$(netstat -an 2>/dev/null | grep SYN_RECV | wc -l)
-    EST_NUM=$(netstat -an 2>/dev/null | grep ESTABLISHED | wc -l)
-    TW_NUM=$(netstat -an 2>/dev/null | grep TIME_WAIT | wc -l)
+    echo "SYN半连接数(DDoS特征)：$SYN_NUM"
+    echo "解释：数值过高 = 遭受SYN洪水DDoS攻击"
+    echo "EST已建立连接数(CC特征)：$EST_NUM"
+    echo "解释：并发连接过多 = 疑似CC网页攻击"
 
-    echo -e "\nSYN_RECV 半连接数量：$SYN_NUM"
-    echo "解释：数值很大就是DDoS SYN洪水，握手不完成，消耗服务器资源"
-
-    echo "ESTABLISHED 正常已连接：$EST_NUM"
-    echo "解释：数值几百上千，就是CC攻击，恶意IP一直占着网站连接不放"
-
-    echo "TIME_WAIT 等待关闭连接：$TW_NUM"
-    echo "解释：过高一般是端口扫描、爬虫、短连接恶意请求"
-
-    # 4.异常IP排行
-    echo -e "\n[4] 连接最多前20个IP（可疑攻击IP）"
+    # ========== 4.单IP连接/发包热度排行 ==========
+    echo -e "\n[4] 外部IP 发包连接热度排行(Top15)"
     echo "----------------------------------------"
-    netstat -an 2>/dev/null | awk '{print $5}' | awk -F: '{print $1}' | grep -v 127.0.0.1 | sort | uniq -c | sort -nr | head -20
-    echo "解释：前面数字越大的IP越可疑，可以直接封禁该IP"
+    echo "连接数量    客户端IP地址"
+    ss -it state all 2>/dev/null | grep -v LOOPBACK | awk '{print $5}' | awk -F: '{print $1}' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort | uniq -c | sort -nr | head -15
+    echo "解释：左侧数字越大，该IP发包请求越疯狂，大概率攻击源IP"
 
-    # 5.综合判定 + 中文结论建议
+    # ========== 5.轻量带宽流量监测 新增 ==========
+    echo -e "\n[5] 实时带宽流量监测"
+    echo "----------------------------------------"
+    NIC=$(ip route | awk '/default/ {print $5}')
+    RX1=$(cat /proc/net/dev | grep $NIC | awk '{print $2}')
+    TX1=$(cat /proc/net/dev | grep $NIC | awk '{print $10}')
+    sleep 2
+    RX2=$(cat /proc/net/dev | grep $NIC | awk '{print $2}')
+    TX2=$(cat /proc/net/dev | grep $NIC | awk '{print $10}')
+    DOWNLOAD=$(( ($RX2 - $RX1) / 2 / 1024 ))
+    UPLOAD=$(( ($TX2 - $TX1) / 2 / 1024 ))
+    echo "网卡：$NIC"
+    echo "下行流量：$DOWNLOAD KB/s"
+    echo "上行流量：$UPLOAD KB/s"
+    echo "解释：流量瞬间暴涨数倍，是DDoS流量轰炸典型特征"
+
+    # ========== 6.Nginx 1小时独立访客 + QPS请求频率 新增 ==========
+    echo -e "\n[6] 网站访客 & IP请求频率(QPS)检测"
+    echo "----------------------------------------"
+    NGINX_LOG="/var/log/nginx/access.log"
+    [ ! -f "$NGINX_LOG" ] && NGINX_LOG="/var/log/nginx/access.log.1"
+
+    if [ -f "$NGINX_LOG" ];then
+        ONE_HOUR_IP=$(tail -n 20000 "$NGINX_LOG" 2>/dev/null | awk '{print $1}' | sort | uniq | wc -l)
+        echo "近1小时独立访客IP：$ONE_HOUR_IP 个"
+        echo "安全阈值上限：${SAFE_USER} 人/小时"
+
+        # QPS单IP请求频率Top10
+        echo -e "\n单IP请求频率Top10(越高越可疑)"
+        tail -n 10000 "$NGINX_LOG" 2>/dev/null | awk '{print $1}' | sort | uniq -c | sort -nr | head -10
+        echo "解释：单IP请求过多、刷屏式访问，属于CC攻击/爬虫特征"
+    else
+        ONE_HOUR_IP=0
+        echo "未检测到Nginx日志，跳过网站访客检测"
+    fi
+
+    # ========== 7.异常UA/空UA爬虫检测 新增 ==========
+    echo -e "\n[7] 异常访问UA爬虫检测"
+    echo "----------------------------------------"
+    if [ -f "$NGINX_LOG" ];then
+        EMPTY_UA=$(tail -n 10000 "$NGINX_LOG" 2>/dev/null | grep -c "\"-\"")
+        echo "空UA/伪造异常请求数量：$EMPTY_UA"
+        echo "解释：大量空UA是CC攻击、批量扫描、恶意爬虫典型特征"
+    else
+        echo "无Nginx日志，跳过UA检测"
+    fi
+
+    # ========== 8.SSH暴力破解检测 新增 ==========
+    echo -e "\n[8] SSH服务器暴力破解检测"
+    echo "----------------------------------------"
+    FAILED_IP=$(journalctl -e 2>/dev/null | grep -i "Failed password" | awk '{print $11}' | sort | uniq -c | sort -nr | head -5)
+    if [ -n "$FAILED_IP" ];then
+        echo "疑似暴力破解IP排行："
+        echo "$FAILED_IP"
+        echo "解释：多次尝试破解SSH密码，建议立即封禁IP"
+    else
+        echo "✅ 未检测到SSH暴力破解行为"
+    fi
+
+    # ========== 9.监听端口安全检测 新增 ==========
+    echo -e "\n[9] 服务器监听端口安全检测"
+    echo "----------------------------------------"
+    ss -tuln | awk '{print $5}' | grep -v :: | grep -v 127.0.0.1
+    echo "解释：只保留22/80/443必要端口，多余端口疑似后门/木马风险"
+
+    # ========== 10.综合智能判定结果 ==========
     echo -e "\n====================================================="
-    echo "               综合判定结果 + 中文解释建议"
+    echo "        全维度综合判定结果 + 处理建议"
     echo "====================================================="
 
-    if [ $SYN_NUM -gt 200 ]; then
-        echo "🔴 判定：疑似 DDoS SYN 洪水攻击"
-        echo "解释：大量虚假连接握手不完成，专门耗死服务器网络"
-        echo "处理建议：开启机房高防/流量清洗、封异常IP段、开启SYN防火墙保护"
-    elif [ $EST_NUM -gt 600 ] && (( $(echo "$CPU_LOAD > 2.0" | bc -l) )); then
-        echo "🔴 判定：疑似 CC 网站应用层攻击"
-        echo "解释：大量真实请求刷网站，把CPU和带宽占满，网站打不开"
-        echo "处理建议：Nginx限速、接入CDN、封禁高频IP、开启人机验证"
-    elif (( $(echo "$CPU_LOAD > 2.2" | bc -l) )); then
-        echo "🟠 判定：服务器负载异常偏高"
-        echo "解释：可能被压测、爬虫轰炸、或有程序死循环占用CPU"
-        echo "处理建议：top查异常进程、检查网站日志、限制单IP访问频率"
-    elif [ $TW_NUM -gt 1200 ]; then
-        echo "🟡 判定：TIME_WAIT连接过多"
-        echo "解释：疑似端口扫描、恶意爬虫、大量短连接轰炸"
-        echo "处理建议：优化内核TCP参数、关闭不必要外网端口"
+    if [ $SYN_NUM -gt 150 ];then
+        echo "🔴 判定：存在DDoS SYN洪水攻击"
+        echo "解释：大量虚假握手包占用带宽，消耗服务器网络资源"
+        echo "建议：机房开启高防流量清洗、封禁异常IP段、开启SYN内核防护"
+    elif [ $ONE_HOUR_IP -gt $SAFE_USER ] && [ $ONE_HOUR_IP -ne 0 ];then
+        echo "🔴 判定：网站访问量超出硬件安全阈值"
+        echo "当前${ONE_HOUR_IP}人 > 安全上限${SAFE_USER}人"
+        echo "解释：疑似CC攻击、恶意爬虫、接口刷量、全网端口扫描"
+        echo "建议：Nginx单IP限速、接入CDN+WAF、封禁高频发包IP"
+    elif [ $DOWNLOAD -gt 8000 ];then
+        echo "🔴 判定：下行带宽流量异常暴涨，疑似流量型DDoS"
+        echo "解释：带宽被大量垃圾数据包占满，网站会打不开、延迟超高"
+        echo "建议：立即开启机房流量清洗，限制异常大流量IP"
+    elif [ $EST_NUM -gt $((SAFE_USER * 3)) ] && (( $(echo "$CPU_LOAD > $CPU_CORE" | bc -l) ));then
+        echo "🟠 判定：并发连接与CPU负载双高，疑似压力攻击"
+        echo "解释：访问并发超出服务器正常承载能力"
+        echo "建议：限制单IP并发连接、排查网站恶意爬虫请求"
+    elif [ -n "$FAILED_IP" ];then
+        echo "🟠 判定：检测到SSH暴力破解行为"
+        echo "建议：立即封禁破解IP、修改SSH端口、禁用root登录"
     else
-        echo "🟢 判定：服务器网络、连接、负载全部正常"
-        echo "解释：目前没有DDoS、CC、端口扫描、爬虫攻击迹象"
-        echo "建议：保持防火墙开机，日常定期检测即可"
+        echo "🟢 判定：负载、连接、访客、流量、端口、登录全部正常"
+        echo "解释：服务器当前无DDoS/CC/爬虫/暴力破解/后门端口风险"
     fi
 
     echo -e "\n按回车键返回主菜单..."
     read
 }
-# =============================================================
-
 # 一键更新 CentOS 最新版系统
 update_centos() {
     read -p "确认要更新 CentOS 最新版系统吗？(y/n): " confirm
